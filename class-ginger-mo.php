@@ -2,7 +2,8 @@
 
 class Ginger_MO {
 	private $default_textdomain = 'default';
-	private $loaded_mo_files = array(); // [ Textdomain => [ .., .. ] ]
+	private $current_locale = 'en_US';
+	private $loaded_mo_files = array(); //[ Locale => [ Textdomain => [ .., .. ] ] ]
 
 	private $fallback_to_default_textdomain = false;
 
@@ -11,7 +12,7 @@ class Ginger_MO {
 		return $instance ? $instance : $instance = new Ginger_MO();
 	}
 
-	public function load( $translation_file, $textdomain = null ) {
+	public function load( $translation_file, $textdomain = null, $locale = null ) {
 		if ( '.mo' == substr( $translation_file, -3 ) ) {
 			$moe = Ginger_MO_File::create( $translation_file );
 		} elseif ( '.php' == substr( $translation_file, -4 ) ) {
@@ -24,12 +25,18 @@ class Ginger_MO {
 			if ( ! $textdomain ) {
 				$textdomain = $this->default_textdomain;
 			}
-			$this->loaded_mo_files[ $textdomain ][] = $moe;
+			if ( ! $locale ) {
+				$locale = $this->current_locale;
+			}
+			$this->loaded_mo_files[ $locale ][ $textdomain ][] = $moe;
 			return true;
 		}
 		return false;
 	}
 
+	public function set_locale( $locale ) {
+		$this->current_locale = $locale;
+	}
 	public function fallback_to_default_textdomain( $set = null ) {
 		if ( null !== $set ) {
 			$this->fallback_to_default_textdomain = $set;
@@ -37,43 +44,53 @@ class Ginger_MO {
 		return $this->fallback_to_default_textdomain;
 	}
 
-	public function unload( $textdomain, $mo = null ) {	
-		if ( $mo ) {
-			foreach ( $this->loaded_mo_files[ $textdomain ] as $i => $moe ) {
+	public function unload( $textdomain, $mo = null, $locale = null ) {	
+		if ( $locale ) {
+			foreach ( $this->loaded_mo_files[ $locale ][ $textdomain ] as $i => $moe ) {
 				if ( $mo === $moe ) {
-					unset( $this->loaded_mo_files[ $textdomain ][ $i ] );
+					unset( $this->loaded_mo_files[ $locale ][ $textdomain ][ $i ] );
 					return true;
 				}
 			}
 			return true;
+		} elseif ( false === $locale ) {
+			// Unload all
+			foreach ( $this->loaded_mo_files as $locale => $moes ) {
+				unset( $this->loaded_mo_files[ $locale ][ $textdomain ] );
+			}
+		} elseif ( null === $locale ) {
+			unset( $this->loaded_mo_files[ $this->current_locale ][ $textdomain ] );
+		} else {
+			unset( $this->loaded_mo_files[ $locale ][ $textdomain ] );
 		}
-
-		unset( $this->loaded_mo_files[ $textdomain ] );
 		return true;
 	}
 
-	public function is_loaded( $textdomain ) {
-		return !empty( $this->loaded_mo_files[ $textdomain ] );
+	public function is_loaded( $textdomain, $locale = null ) {
+		if ( ! $locale ) {
+			$locale = $this->current_locale;
+		}
+		return !empty( $this->loaded_mo_files[ $locale ][ $textdomain ] );
 	}
 
-	public function translate( $text, $context, $textdomain = null ) {
+	public function translate( $text, $context, $textdomain = null, $locale = null ) {
 		if ( $context ) {
 			$context .= "\4";
 		}
 
-		$translation = $this->locate_translation( "{$context}{$text}", $textdomain );
-		return $translation ? $translation['translations'] : $text;
+		$translation = $this->locate_translation( "{$context}{$text}", $textdomain, $locale );
+		return $translation ? $translation[0] : $text;
 	}
 
-	public function translate_plural( $plurals, $number, $context, $textdomain = null ) {
+	public function translate_plural( $plurals, $number, $context, $textdomain = null, $locale = null ) {
 		if ( $context ) {
 			$context .= "\4";
 		}
 		$text = implode( "\0", $plurals );
-		$translation = $this->locate_translation( "{$context}{$text}", $textdomain );
+		$translation = $this->locate_translation( "{$context}{$text}", $textdomain, $locale );
 
 		if ( $translation ) {
-			$t = is_array( $translation['translations'] ) ? $translation['translations'] : explode( "\0", $translation['translations'] );
+			$t = is_array( $translations['translations'] ) ? $translations['translations'] : explode( "\0", $translation['translations'] );
 			$num = $translation['file']->get_plural_form( $number );
 		} else {
 			$t = $plurals;
@@ -101,13 +118,13 @@ class Ginger_MO {
 		return compact( 'num_plurals', 'plural_func' );
 	}
 
-	private function locate_translation( $string, $textdomain = null ) {
+	private function locate_translation( $string, $textdomain = null, $locale = null ) {
 		if ( ! $textdomain ) {
 			$textdomain = $this->default_textdomain;
 		}
 
 		// Find the translation in all loaded files for this text domain
-		foreach ( $this->get_mo_files( $textdomain ) as $moe ) {
+		foreach ( $this->get_mo_files( $textdomain, $locale ) as $moe ) {
 			if ( false !== ( $translation = $moe->translate( $string ) ) ) {
 				return array(
 					'translations' => $translation,
@@ -116,7 +133,7 @@ class Ginger_MO {
 			}
 			if ( $moe->error() ) {
 				// Unload this file, something is wrong.
-				$this->unload( $textdomain, $moe );
+				$this->unload( $textdomain, $moe, $locale );
 			}
 		}
 
@@ -124,14 +141,18 @@ class Ginger_MO {
 		return false;
 	}
 
-	protected function get_mo_files( $textdomain = null ) {
+	protected function get_mo_files( $textdomain = null, $locale = null ) {
+		if ( ! $locale ) {
+			$locale = $this->current_locale;
+		}
+
 		$moes = array();
-		if ( isset( $this->loaded_mo_files[ $textdomain ] ) ) {
-			$moes = $this->loaded_mo_files[ $textdomain ];
+		if ( isset( $this->loaded_mo_files[ $locale ][ $textdomain ] ) ) {
+			$moes = $this->loaded_mo_files[ $locale ][ $textdomain ];
 		}
 
 		if ( $this->fallback_to_default_textdomain && $textdomain != $this->default_textdomain ) {
-			$moes = array_merge( $moes, $this->get_mo_files( $this->default_textdomain ) );
+			$moes = array_merge( $moes, $this->get_mo_files( $this->default_textdomain, $locale ) );
 		}
 
 		return $moes;
