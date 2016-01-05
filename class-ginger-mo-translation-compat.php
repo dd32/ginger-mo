@@ -2,6 +2,10 @@
 
 class Ginger_MO_Translation_Compat implements ArrayAccess {
 
+	function __construct() {
+		Ginger_MO::instance()->set_locale( get_locale() );
+	}
+
 	function offsetExists( $domain ) {
 		return Ginger_MO::instance()->is_loaded( $domain );
 	}
